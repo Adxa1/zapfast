@@ -75,7 +75,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
@@ -105,15 +105,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $version =$env:GITHUB_REF_NAME.TrimStart("v")
           $arch = "${{ matrix.target }}".Split("-")[0]
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          $numericVersion = $version.Split("-")[0]
+          $numericVersion =$version.Split("-")[0]
           & $iscc "/DVersion=$version" "/DNumericVersion=$numericVersion" "/DArch=$arch" `
             "/DBinary=$PWD\target\${{ matrix.target }}\release\zapfast.exe" `
             "/DOutputDir=$PWD\dist" packaging\windows\zapfast.iss
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { exit$LASTEXITCODE }
 
       - name: Attest release packages
         uses: crmne/native-packages/.github/actions/attest@dc0cb1586894ca0239c53fd02d4da8064712671c # v0.7.0
@@ -159,8 +159,8 @@ jobs:
 
       - name: Build both architectures
         run: |
-          cargo build --locked --release --target aarch64-apple-darwin
-          cargo build --locked --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
 
       - name: Universal binary
         run: |
