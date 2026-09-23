@@ -39,6 +39,7 @@ mod device_store;
 mod interactive;
 mod poll_history;
 mod polls;
+mod stickers;
 
 use super::{Command, Event, LinkStatus, Waker, read_sync::ReadSync};
 use crate::app::PAGE;
@@ -304,6 +305,9 @@ async fn receipts_allowed(
     }
 }
 
+/// A sticker file's size and modification time, with the emojis read from it.
+type EmojiStamp = ((u64, Option<std::time::SystemTime>), Vec<String>);
+
 /// Downloadable recent sticker from the phone.
 struct PhoneSticker(wa::StickerMetadata);
 
@@ -458,6 +462,11 @@ pub async fn run(
         pending_avatars: HashMap::new(),
         sticker_fetches: HashSet::new(),
         sticker_downloads: HashSet::new(),
+        recent_hashes: HashMap::new(),
+        emoji_cache: HashMap::new(),
+        favorite_fetches: HashSet::new(),
+        favorites_pushing: false,
+        favorites_again: false,
         downloads: HashSet::new(),
         read_sync: ReadSync::default(),
         poll_decrypting: 0,
@@ -677,6 +686,16 @@ struct Worker {
     sticker_fetches: HashSet<String>,
     /// Active chat-sticker downloads by chat and message id.
     sticker_downloads: HashSet<(ChatId, String)>,
+    /// Content hashes of the stickers last listed in Recent, by file.
+    recent_hashes: HashMap<PathBuf, String>,
+    /// Sticker emojis by file, with the size and time they were read at.
+    emoji_cache: HashMap<PathBuf, EmojiStamp>,
+    /// Favorite stickers being fetched from the phone's list, by hash.
+    favorite_fetches: HashSet<String>,
+    /// Whether favorite changes are on their way to the phone.
+    favorites_pushing: bool,
+    /// More favorite changes arrived while a push was running.
+    favorites_again: bool,
     /// Active attachment downloads by chat, message id, and carousel card.
     downloads: HashSet<(ChatId, String, Option<usize>)>,
 }
@@ -1094,7 +1113,7 @@ impl Worker {
     }
 
     fn backfill(&mut self) {
-        const VERSION: &str = "2";
+        const VERSION: &str = "3";
         if self.archive.meta("derived").ok().flatten().as_deref() == Some(VERSION) {
             return;
         }
@@ -1882,6 +1901,7 @@ impl Worker {
                 self.retry_avatars();
                 self.pump_read_sync();
                 self.poll_history.reconnect(Instant::now());
+                self.push_favorites();
                 let _ = self.archive.retry_poll_votes();
                 self.pump_poll_votes();
                 if let Some(client) = self.client.clone() {
@@ -2060,6 +2080,8 @@ impl Worker {
                         .set_muted_at(&chat, until, update.timestamp.timestamp_millis());
                 self.emit_chat(&chat);
             }
+            E::RemoveRecentStickerUpdate(update) => self.recent_sticker_removed(update),
+            E::FavoriteStickerUpdate(update) => self.favorite_sticker_update(update),
             E::LockChatUpdate(update) => {
                 let chat = self.canonical(&update.jid);
                 self.ensure_chat(&chat, None);
@@ -3855,18 +3877,16 @@ impl Worker {
                 path,
                 quoting,
             } => self.send_sticker(chat, path, quoting),
-            Command::SaveSticker { path } => match self.save_sticker(&path) {
-                Ok(()) => self.emit_stickers(),
-                Err(error) => self.emit(Event::Error(format!("Could not save sticker: {error}"))),
-            },
-            Command::ForgetSticker { path } => {
-                // Restrict deletion to files in the saved-sticker directory.
-                if path.starts_with(self.dirs.saved_sticker_dir())
-                    && std::fs::remove_file(&path).is_ok()
-                {
-                    self.emit_stickers();
-                }
-            }
+            Command::SaveSticker { path } => self.favorite_sticker(&path),
+            Command::RemoveRecentSticker { path } => self.remove_recent_sticker(&path),
+            Command::ForgetSticker { path } => self.unfavorite_sticker(&path),
+            Command::FavoritePushed {
+                hash,
+                updated_at,
+                result,
+            } => self.favorite_pushed(&hash, updated_at, result),
+            Command::FavoritesPushed => self.favorites_pushed(),
+            Command::FavoriteFetched { hash, result } => self.favorite_fetched(&hash, result),
             Command::ImportStickerUrl { url } => {
                 let commands = self.commands.clone();
                 let packs = self.packs_dir();
@@ -4046,6 +4066,69 @@ impl Worker {
                     waker.wake();
                 });
             }
+            Command::PickStickerPicture => {
+                let commands = self.commands.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = match rfd::FileDialog::new()
+                        .set_title("Make a sticker")
+                        .add_filter("Pictures", &["png", "jpg", "jpeg", "webp", "gif"])
+                        .pick_file()
+                    {
+                        Some(path) => std::fs::read(&path)
+                            .map_err(|error| error.to_string())
+                            .and_then(|bytes| super::sticker_maker::inspect(&bytes))
+                            .map(|(width, height, transparent)| (path, width, height, transparent)),
+                        // Ignore file-picker cancellation.
+                        None => Err(String::new()),
+                    };
+                    let _ = commands.send(Command::StickerPicturePicked { result });
+                });
+            }
+            Command::StickerPicturePicked { result } => match result {
+                Ok((path, width, height, transparent)) => self.emit(Event::StickerPicture {
+                    path,
+                    width,
+                    height,
+                    transparent,
+                }),
+                Err(error) if error.is_empty() => {}
+                Err(error) => self.emit(Event::Error(error)),
+            },
+            Command::MakeSticker {
+                source,
+                crop,
+                transparent,
+                emojis,
+                chat,
+            } => {
+                let commands = self.commands.clone();
+                let dir = self.dirs.sticker_cache_dir().join("made");
+                tokio::task::spawn_blocking(move || {
+                    let result = std::fs::read(&source)
+                        .map_err(|error| error.to_string())
+                        .and_then(|bytes| {
+                            super::sticker_maker::make(&bytes, crop, transparent, &emojis)
+                        })
+                        .and_then(|sticker| {
+                            std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+                            let hash = super::sticker_store::content_hash(&sticker);
+                            let path = dir.join(format!("{hash}.webp"));
+                            std::fs::write(&path, sticker).map_err(|error| error.to_string())?;
+                            Ok(path)
+                        });
+                    let _ = commands.send(Command::StickerMade { result, chat });
+                });
+            }
+            Command::StickerMade { result, chat } => match (result, chat) {
+                (Ok(path), Some(chat)) => self.send_sticker(chat, path, None),
+                (Ok(path), None) => {
+                    self.favorite_sticker(&path);
+                    self.emit(Event::Info("Added to favorites".to_owned()));
+                }
+                (Err(error), _) => {
+                    self.emit(Event::Error(format!("Could not make the sticker: {error}")))
+                }
+            },
             Command::PickStickerArchive => {
                 let commands = self.commands.clone();
                 let packs = self.packs_dir();
@@ -4325,6 +4408,38 @@ impl Worker {
             }
             Command::GifResults { query, results } => {
                 self.emit(Event::Gifs { query, results });
+            }
+            Command::ViewStickerPack { chat, message } => self.view_sticker_pack(&chat, &message),
+            Command::StickerPackViewed { result } => {
+                self.emit(Event::StickerPackPreview(result));
+            }
+            Command::AddStickerPack { dir, name } => self.add_sticker_pack(&dir, &name),
+            Command::SendStickerPack { chat, dir } => self.send_sticker_pack(chat, dir),
+            Command::CreateStickerPack { name } => {
+                match super::sticker_store::create_local_pack(
+                    &self.packs_dir(),
+                    &name,
+                    crate::util::now(),
+                ) {
+                    Ok(_) => self.emit_stickers(),
+                    Err(error) => {
+                        self.emit(Event::Error(format!("Could not create the pack: {error}")))
+                    }
+                }
+            }
+            Command::SetStickerPack {
+                pack,
+                sticker,
+                member,
+            } => {
+                // Restrict changes to folders in the pack directory.
+                let root = self.packs_dir();
+                if pack.starts_with(&root) && pack != root {
+                    if let Err(error) = super::sticker_store::set_member(&pack, &sticker, member) {
+                        log::warn!("could not file a sticker in its pack: {error}");
+                    }
+                    self.emit_stickers();
+                }
             }
             Command::RecentStickers => {
                 self.fetch_missing_stickers();
@@ -5253,138 +5368,19 @@ impl Worker {
         }
     }
 
-    /// Returns distinct downloaded stickers by most recent use.
-    fn emit_stickers(&mut self) {
-        let mut seen = HashSet::new();
-        let mut list: Vec<(i64, PathBuf)> = Vec::new();
-        if let Ok(phone) = self.archive.phone_stickers() {
-            for sticker in phone {
-                if let Some(path) = sticker.path
-                    && path.exists()
-                    && seen.insert(sticker.hash)
-                {
-                    list.push((sticker.last_used, path));
-                }
-            }
-        }
-        match self.archive.recent_stickers(80) {
-            Ok(rows) => {
-                for sticker in rows {
-                    let hash = sticker
-                        .raw
-                        .as_deref()
-                        .and_then(|raw| wa::Message::decode_from_slice(raw).ok())
-                        .and_then(|message| {
-                            let base = message.get_base_message();
-                            let sticker = base.sticker_message.as_option()?;
-                            sticker_hash(
-                                sticker.file_sha256.as_deref(),
-                                sticker.file_enc_sha256.as_deref(),
-                            )
-                        })
-                        .unwrap_or_else(|| sticker.path.display().to_string());
-                    if seen.insert(hash) {
-                        list.push((sticker.last_used, sticker.path));
-                    }
-                }
-            }
-            Err(error) => log::warn!("could not list stickers: {error}"),
-        }
-        list.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
-        self.emit(Event::Stickers {
-            saved: self.saved_stickers(),
-            packs: self.sticker_packs(),
-            recent: list.into_iter().map(|(_, path)| path).collect(),
-        });
-    }
-
-    /// Root directory for imported sticker packs.
+    /// Root directory for sticker packs.
     fn packs_dir(&self) -> PathBuf {
         self.dirs.saved_sticker_dir().join("packs")
     }
 
-    /// Returns imported packs, newest first, with files in name order.
+    /// Returns sticker packs, newest first.
     fn sticker_packs(&self) -> Vec<crate::model::StickerPack> {
-        let Ok(entries) = std::fs::read_dir(self.packs_dir()) else {
-            return Vec::new();
-        };
-        let mut packs: Vec<(std::time::SystemTime, crate::model::StickerPack)> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let dir = entry.path();
-                if !dir.is_dir() {
-                    return None;
-                }
-                let mut stickers: Vec<PathBuf> = std::fs::read_dir(&dir)
-                    .ok()?
-                    .flatten()
-                    .map(|file| file.path())
-                    .filter(|path| {
-                        path.extension()
-                            .is_some_and(|extension| extension == "webp")
-                    })
-                    .collect();
-                if stickers.is_empty() {
-                    return None;
-                }
-                stickers.sort();
-                let when = entry
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                Some((
-                    when,
-                    crate::model::StickerPack {
-                        name: entry.file_name().to_string_lossy().into_owned(),
-                        dir,
-                        stickers,
-                    },
-                ))
-            })
-            .collect();
-        packs.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
-        packs.into_iter().map(|(_, pack)| pack).collect()
+        super::sticker_store::packs(&self.packs_dir())
     }
 
     /// Returns saved sticker files, newest first.
     fn saved_stickers(&self) -> Vec<PathBuf> {
-        let Ok(entries) = std::fs::read_dir(self.dirs.saved_sticker_dir()) else {
-            return Vec::new();
-        };
-        let mut saved: Vec<(std::time::SystemTime, PathBuf)> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                path.extension()
-                    .is_some_and(|extension| extension == "webp")
-                    .then(|| {
-                        let when = entry
-                            .metadata()
-                            .and_then(|metadata| metadata.modified())
-                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        (when, path)
-                    })
-            })
-            .collect();
-        saved.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
-        saved.into_iter().map(|(_, path)| path).collect()
-    }
-
-    /// Saves a sticker under its content hash to deduplicate copies.
-    fn save_sticker(&self, path: &Path) -> Result<(), String> {
-        use sha2::{Digest, Sha256};
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-        let hash: String = Sha256::digest(&bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let dir = self.dirs.saved_sticker_dir();
-        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        let target = dir.join(format!("{hash}.webp"));
-        if !target.exists() {
-            std::fs::write(&target, &bytes).map_err(|error| error.to_string())?;
-        }
-        Ok(())
+        super::sticker_store::saved(&self.dirs.saved_sticker_dir())
     }
 
     fn avatar_file(&self, id: &str, full: bool) -> PathBuf {
@@ -6582,8 +6578,8 @@ fn classify(base: &wa::Message) -> Option<Content> {
     if base.event_message.is_set() {
         return unsupported("event");
     }
-    if base.sticker_pack_message.is_set() {
-        return unsupported("sticker pack");
+    if let Some(pack) = base.sticker_pack_message.as_option() {
+        return Some(stickers::sticker_pack_content(pack));
     }
     if let Some(content) = interactive::classify(base) {
         return Some(content);
@@ -6632,7 +6628,7 @@ fn classify(base: &wa::Message) -> Option<Content> {
 }
 
 /// Uploaded attachment protobuf and archive content.
-struct Prepared {
+pub(super) struct Prepared {
     message: wa::Message,
     content: Content,
     thumbnail: Option<Vec<u8>>,
@@ -7038,7 +7034,7 @@ fn search_gifs(query: &str, key: &str, dir: &Path) -> Result<Vec<Gif>, GifError>
 }
 
 /// Copies a sent attachment to media storage and builds its archive row.
-async fn file_outbound(
+pub(super) async fn file_outbound(
     client: &Client,
     chat: &str,
     me: &str,
@@ -8741,6 +8737,11 @@ mod receipt_tests {
             pending_avatars: HashMap::new(),
             sticker_fetches: HashSet::new(),
             sticker_downloads: HashSet::new(),
+            recent_hashes: HashMap::new(),
+            emoji_cache: HashMap::new(),
+            favorite_fetches: HashSet::new(),
+            favorites_pushing: false,
+            favorites_again: false,
             downloads: HashSet::new(),
             read_sync: ReadSync::default(),
             poll_decrypting: 0,
