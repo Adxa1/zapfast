@@ -1013,8 +1013,17 @@ pub enum Action {
     PickChatSound(ChatId),
     /// Asks for a folder for new downloads.
     PickDownloadFolder,
+    /// Changes our display name and About text; `None` keeps the current one.
+    SetProfile {
+        name: Option<String>,
+        about: Option<String>,
+    },
+    /// Asks for a picture and makes it our profile picture.
+    PickProfilePicture,
     /// Sets or resets (`None`) the folder for new downloads.
     SetDownloadFolder(Option<PathBuf>),
+    /// Saves the proxy setting and reconnects. Empty follows the environment.
+    SetProxy(String),
     /// Plays a notification sound once, as a preview.
     PreviewSound(PathBuf),
     ZoomBy(f32),

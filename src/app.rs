@@ -397,6 +397,7 @@ impl Default for AppOptions {
 
 impl App {
     pub fn new(waker: &Waker, dirs: AppDirs, settings: Settings, options: AppOptions) -> Self {
+        crate::proxy::configure(&settings.proxy);
         let backend = Backend::spawn(dirs.clone(), waker.clone());
         let mut app = Self::with_backend(dirs, settings, backend, waker.clone());
         app.custom_themes.enable_desktop_themes();
@@ -1049,7 +1050,7 @@ impl App {
             counted.push(if count == 1 {
                 name
             } else {
-                format!("{name} ×{count}")
+                format!("{name} x{count}")
             });
         }
         numbers.sort();
@@ -3447,6 +3448,10 @@ impl App {
             }
             Action::PreviewSound(path) => crate::notify::play_sound(path),
             Action::PickDownloadFolder => self.backend.send(Command::PickDownloadFolder),
+            Action::SetProfile { name, about } => {
+                self.backend.send(Command::SetProfile { name, about });
+            }
+            Action::PickProfilePicture => self.backend.send(Command::PickProfilePicture),
             Action::SetChatSound { chat, sound } => {
                 if let Some(known) = self.chat_mut(&chat) {
                     known.notification_sound = sound.clone();
@@ -3458,6 +3463,22 @@ impl App {
                 self.settings.download_folder = folder.clone();
                 self.mark_settings_dirty();
                 self.backend.send(Command::SetDownloadFolder(folder));
+            }
+            Action::SetProxy(value) => {
+                let value = value.trim().to_owned();
+                if value == self.settings.proxy {
+                    return;
+                }
+                if !value.is_empty()
+                    && let Err(error) = crate::proxy::Proxy::parse(&value)
+                {
+                    self.toast_error(error);
+                    return;
+                }
+                self.settings.proxy = value.clone();
+                self.mark_settings_dirty();
+                crate::proxy::configure(&value);
+                self.backend.send(Command::SetProxy(value));
             }
             Action::SetStartWithSystem(enabled) => match crate::autostart::set(enabled) {
                 Ok(()) => self.start_with_system = Some(crate::autostart::enabled()),
@@ -6142,7 +6163,7 @@ mod name_tests {
         chat.participants.push(app.me.clone().unwrap());
         for saved_names in [false, true] {
             app.settings.names_from_contacts = saved_names;
-            assert_eq!(app.participant_names(&chat), "Andrea ×3, Giacomo, You");
+            assert_eq!(app.participant_names(&chat), "Andrea x3, Giacomo, You");
             assert_eq!(app.chat_title(&chat), app.participant_names(&chat));
             chat.name.clear();
             assert_eq!(app.chat_title(&chat), app.participant_names(&chat));
