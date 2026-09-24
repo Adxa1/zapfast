@@ -78,7 +78,7 @@ impl ChatFilter {
     pub fn matches(self, chat: &Chat) -> bool {
         match self {
             Self::All => !chat.is_channel(),
-            Self::Unread => chat.unread > 0 && !chat.is_channel(),
+            Self::Unread => chat.looks_unread() && !chat.is_channel(),
             Self::Private => chat.kind == ChatKind::Direct,
             Self::Groups => chat.kind == ChatKind::Group,
             Self::Channels => chat.is_channel(),
@@ -97,6 +97,9 @@ pub struct Chat {
     /// Latest-message Unix timestamp used for ordering.
     pub last_activity: i64,
     pub unread: u32,
+    /// Marked unread here or on another device: the empty unread dot, with no
+    /// pending count. Synced with the phone.
+    pub marked_unread: bool,
     pub archived: bool,
     pub pinned: bool,
     /// Pin time in Unix milliseconds; zero for older archives with no ordering.
@@ -139,6 +142,7 @@ impl Chat {
             kind,
             last_activity: 0,
             unread: 0,
+            marked_unread: false,
             archived: false,
             pinned: false,
             pinned_at: 0,
@@ -165,6 +169,11 @@ impl Chat {
 
     pub fn is_group(&self) -> bool {
         self.kind == ChatKind::Group
+    }
+
+    /// Counted unread, or marked unread with nothing pending.
+    pub fn looks_unread(&self) -> bool {
+        self.unread > 0 || self.marked_unread
     }
 
     pub fn muted(&self, now: i64) -> bool {
@@ -379,6 +388,9 @@ pub enum Content {
     /// media. Linked devices receive a placeholder that never fills in.
     PhoneOnly {
         view_once: bool,
+        /// A live location, which WhatsApp shows only on the phone.
+        #[serde(default)]
+        live_location: bool,
     },
 }
 
@@ -572,9 +584,20 @@ impl Content {
             Self::Poll { question, .. } => format!("Poll: {question}"),
             Self::Revoked => "This message was deleted".to_owned(),
             Self::Unsupported { what } => format!("Unsupported message ({what})"),
-            Self::PhoneOnly { view_once: true } => "View once message".to_owned(),
-            Self::PhoneOnly { view_once: false } => "Message on your phone".to_owned(),
+            Self::PhoneOnly {
+                live_location: true,
+                ..
+            } => "Live location".to_owned(),
+            Self::PhoneOnly {
+                view_once: true, ..
+            } => "View once message".to_owned(),
+            Self::PhoneOnly { .. } => "Message on your phone".to_owned(),
         }
+    }
+
+    /// Whether this stands in for a message this device could not open.
+    pub fn is_placeholder(&self) -> bool {
+        matches!(self, Self::Unsupported { .. } | Self::PhoneOnly { .. })
     }
 
     pub fn media(&self) -> Option<&Media> {
@@ -1068,6 +1091,9 @@ pub enum Action {
         composing: bool,
     },
     MarkRead(ChatId),
+    /// Marks a read chat unread, here and on the phone; does not invent a
+    /// pending count.
+    MarkUnread(ChatId),
     LoadOlder(ChatId),
     /// Requests messages older than the local archive.
     FetchOlder(ChatId),
@@ -1107,6 +1133,8 @@ pub enum Action {
     StartRecording,
     CancelRecording,
     SendRecording,
+    /// Drops a voice message the worker refused to send.
+    DiscardUnsentVoice,
     /// Opens a downloaded image in ZapFast's native preview. Only the file
     /// extension and existence are checked here, and anything else opens
     /// externally; an image that then fails to decode shows a message with an
@@ -1381,6 +1409,17 @@ pub enum Action {
 #[cfg(test)]
 mod tests {
     use super::StickerCrop;
+
+    #[test]
+    fn looks_unread_covers_counts_and_the_empty_dot() {
+        let mut chat = Chat::new("1@s.whatsapp.net".into(), "A".into());
+        assert!(!chat.looks_unread());
+        chat.marked_unread = true;
+        assert!(chat.looks_unread());
+        chat.marked_unread = false;
+        chat.unread = 2;
+        assert!(chat.looks_unread());
+    }
 
     #[test]
     fn a_sticker_crop_stays_square_and_inside_the_picture() {

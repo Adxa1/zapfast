@@ -183,6 +183,8 @@ pub enum Command {
         chat: ChatId,
         receipts: bool,
     },
+    /// Marks a chat with nothing pending as unread, here and on the phone.
+    MarkUnread(ChatId),
     /// Follows one of our group messages' receipts while "Message info" is
     /// open, or stops following with `None`.
     WatchReceipts(Option<(ChatId, String)>),
@@ -190,6 +192,13 @@ pub enum Command {
     ReadSyncFinished {
         chat: ChatId,
         through: i64,
+        success: bool,
+    },
+    /// Result of an unread mark sent to the other linked devices, keyed by
+    /// when the mark was made.
+    UnreadSyncFinished {
+        chat: ChatId,
+        marked_at: i64,
         success: bool,
     },
     /// Loads archived chat messages before an optional boundary.
@@ -262,6 +271,8 @@ pub enum Command {
         paths: Vec<PathBuf>,
         caption: Option<String>,
         mentions: Vec<String>,
+        /// The message the first file replies to.
+        quoting: Option<String>,
     },
     /// Sends a clipboard image as straight-alpha RGBA.
     SendImage {
@@ -271,6 +282,7 @@ pub enum Command {
         rgba: Vec<u8>,
         caption: Option<String>,
         mentions: Vec<String>,
+        quoting: Option<String>,
     },
     /// Syncs chat mute state. `Some(0)` is indefinite and `None` unmutes.
     SetMuted(ChatId, Option<i64>),
@@ -325,6 +337,10 @@ pub enum Command {
     },
     /// Internal: every queued favorite change was sent.
     FavoritesPushed,
+    /// Internal: the one-time replay of the phone's favorites finished.
+    FavoritesRecovered {
+        complete: bool,
+    },
     /// Internal: a favorite from the phone finished downloading.
     FavoriteFetched {
         hash: String,
@@ -471,6 +487,7 @@ pub enum Command {
     SendGif {
         chat: ChatId,
         gif: Gif,
+        quoting: Option<String>,
     },
     /// Searches GIPHY or lists trending results for an empty query.
     SearchGifs {
@@ -784,7 +801,46 @@ pub enum Event {
     },
     UpdateDownloaded(Result<Box<crate::updates::install::Prepared>, String>),
     UpdateInstalling(Result<(), String>),
+    /// A send was refused before anything left this computer. It returns
+    /// what was being sent so the user loses neither text nor a recording.
+    SendRefused {
+        chat: ChatId,
+        quoting: Option<String>,
+        unsent: Unsent,
+        reason: Refusal,
+    },
     Error(String),
+}
+
+/// Why the worker refused a send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// There is no WhatsApp connection.
+    Offline,
+    /// The message being replied to cannot be quoted, because its row or its
+    /// original protobuf is missing, unreadable, or deleted. Sending anyway
+    /// would deliver the reply without its quote.
+    QuoteUnavailable,
+}
+
+/// The content of a refused send.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Unsent {
+    /// Composer text in wire form, with `@user` mention tokens.
+    Text(String),
+    Voice(Vec<f32>),
+    Files {
+        paths: Vec<PathBuf>,
+        caption: Option<String>,
+    },
+    Image {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+        caption: Option<String>,
+    },
+    Sticker,
+    Gif,
 }
 
 /// Cross-thread window wake handle.

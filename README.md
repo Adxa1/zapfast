@@ -29,7 +29,9 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   chips under the search bar; a chip with unread chats shows how many it has.
   Followed channels have their own **Channels** chip and stay out of the other
   filters; right-click it to mute or unmute every channel at once. **Archived**
-  opens the archived chats. Opening a chat with
+  opens the archived chats. Right-click a chat and choose **Mark as unread**
+  to put an empty dot on it, as on the phone; the mark syncs with your phone
+  both ways, and opening the chat or a new message clears it. Opening a chat with
   unread messages scrolls to an "unread messages" divider above the first one.
   Pinned chats stay in pin order (most recently pinned first), regardless of
   new messages. Like on the phone, you can pin up to three chats. Chat and contact name searches ignore accents, so `Angel`
@@ -116,6 +118,8 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   file picker. They stay in the composer until you send them or press Escape.
   Pasting a picture uses its image data without adding the source URL or HTML
   to your caption. Text-only clipboard contents still paste as text.
+  MP3, M4A, AAC, and OGG files go as audio messages; other audio, such as
+  WAV or FLAC, goes as a document so the recipient gets the original file.
 - **Mute chats** for eight hours, one week, or indefinitely. The setting also
   applies on your phone and to desktop notifications. Mute changes from your
   phone survive history arriving later, including during initial linking.
@@ -129,10 +133,13 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
 - **Voice messages.** Play, seek, record, reply with, and send voice messages
   in the chat. The speed chip cycles between 1x, 1.5x, and 2x, and the
   message menu offers 1x, 1.25x, 1.5x, 1.75x, and 2x, keeping the speaker's
-  pitch; the last choice applies to later messages. The app normalizes quiet
-  recordings and handles OGG/Opus without external tools. On Linux and
+  pitch; the last choice applies to later messages. When one ends, playback
+  carries on through the voice messages right after it that you have not
+  heard yet, as on the phone; any other message ends the run. The app
+  normalizes quiet recordings and handles OGG/Opus without external tools. On Linux and
   Windows, music and other media playing in other apps pause while you record
-  or play a voice message and resume afterwards; only players that were
+  or play a voice message, or watch a video with sound, and resume afterwards;
+  only players that were
   playing are resumed. Two switches in Settings turn this off for recording
   and for playback. Linux uses MPRIS, so any player that implements it works;
   macOS has no public API for this, so the switches are hidden there.
@@ -145,7 +152,14 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   are dismissed first. Type `:name` to autocomplete
   an emoji without leaving the composer, or `@` in a group to mention a member.
   Reply, react with any emoji, edit, forward, delete, and check when a message was sent,
-  delivered, or read. The same right-click menu copies a message's ID, which
+  delivered, or read. Replies can be text, attachments, voice messages,
+  stickers, or GIFs. A reply never goes out without its quote: if the
+  original is no longer available on this computer, nothing is sent, the text
+  or attachments return to the composer, and a voice message waits above it
+  to be sent again or discarded. Cancel the reply to send without a quote.
+  Quotes carry a bar and name in the quoted person's colour; clicking one
+  scrolls back to the original, which flashes briefly, as a search result
+  does. The same right-click menu copies a message's ID, which
   helps when looking one up for a bug report.
   Opening a message's context menu outlines that message until the menu closes.
   The full reaction picker stays beside the menu and adds a target preview.
@@ -242,15 +256,15 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   chats stay quiet until you unarchive them. Windows notifications
   identify ZapFast as the sender and show chat pictures as small circular icons;
   installed and portable builds register this identity in the current user's registry.
-  On Linux,
-  clicking a notification opens the chat, and reading the chat here or on another
-  device dismisses its outstanding notifications. On macOS, notifications use
+  On Linux and Windows, clicking a notification opens the chat at the message
+  it announced. On Linux, reading the chat here or on another device dismisses
+  its outstanding notifications. On macOS, notifications use
   the installed ZapFast application's identity without an application chooser;
   unregistered development builds skip notifications if that identity is unavailable.
-  **Message sound** and **Group sound** in Settings choose ZapFast's own
-  **Chime** (the default for one-to-one chats) or **Ripple** (the default for
-  groups), the system's notification sound, no sound, or an audio file (WAV,
-  MP3, or OGG Vorbis) that ZapFast plays itself. **Notification sound** in a chat's right-click
+  **Message sound** and **Group sound** in Settings choose Pidgin's classic
+  message sound (the default for one-to-one chats) or its alert (the default
+  for groups), the system's notification sound, no sound, or an audio file
+  (WAV, MP3, or OGG Vorbis) that ZapFast plays itself. **Notification sound** in a chat's right-click
   menu gives that chat its own sound, stored in the encrypted archive.
 - **Unread count on the taskbar.** On Linux, ZapFast publishes the unread total
   through the Unity Launcher API, so KDE Plasma shows it as a badge on the
@@ -267,9 +281,9 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
   WhatsApp's `[time, date] Name:` format. Contact names and numbers are also
   selectable, with Brazilian numbers shown as `(DDD) XXXX-XXXX` or
   `(DDD) XXXXX-XXXX`.
-- **Keyboard shortcuts.** `Ctrl+F` or `Ctrl+K` searches your chats,
-  `Ctrl+Shift+F` searches the open chat (Enter and Shift+Enter move between
-  matches), `Alt+↑/↓` switches chats and
+- **Keyboard shortcuts.** `Ctrl+K` or `Ctrl+Shift+F` searches your chats,
+  `Ctrl+F` searches the open chat as in WhatsApp (Enter and Shift+Enter move
+  between matches; with no chat open it searches your chats), `Alt+↑/↓` switches chats and
   keeps the active chat visible in the list, `↑` in an empty input edits your
   previous message, `Esc` cancels the current action, `Ctrl+L` focuses the
   message input, `Ctrl+N` opens New chat, `Ctrl+B` hides or shows the chat
@@ -290,8 +304,8 @@ See **[zapfast.rocks](https://zapfast.rocks)** for downloads and guides.
 
 ## What it does not do yet
 
-- Reply to a message with an attachment, or play videos in codecs other than
-  H.264 in the app (they open in your system player).
+- Play videos in codecs other than H.264 in the app (they open in your system
+  player).
 - Calls, status posts, communities, newsletters, and group administration.
 - Submit interactive forms, payments, shopping flows, or carousel selections.
   Use these in WhatsApp Web or on your phone. Embedded videos and documents,
@@ -712,3 +726,5 @@ Release packaging uses the [native-packages](https://rubygems.org/gems/native-pa
 
 MIT. Inter and Noto Color Emoji are under the SIL Open Font License; the icons
 and the chat wallpaper doodles are from [Lucide](https://lucide.dev) (ISC).
+The notification sounds are [Pidgin](https://pidgin.im)'s, under the GPL-2.0
+(see `assets/sounds/`).

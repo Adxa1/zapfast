@@ -584,7 +584,13 @@ fn results(app: &mut App, ui: &mut egui::Ui) {
     let chats: Vec<Chat> = app.visible_chats().into_iter().cloned().collect();
     let hits: Vec<Message> = app.search_hits.clone();
     let contacts: Vec<Contact> = app.matching_contacts().into_iter().cloned().collect();
-    if chats.is_empty() && hits.is_empty() && contacts.is_empty() {
+    let needle = crate::util::search_key(app.search.trim());
+    let offer_self = !needle.is_empty()
+        && app.offers_self(&needle)
+        && !chats
+            .iter()
+            .any(|chat| app.me.as_deref() == Some(chat.id.as_str()));
+    if chats.is_empty() && hits.is_empty() && contacts.is_empty() && !offer_self {
         widgets::empty_state(
             ui,
             &palette,
@@ -617,8 +623,11 @@ fn results(app: &mut App, ui: &mut egui::Ui) {
                     ui.push_id(("hit", &hit.chat, &hit.id), |ui| hit_row(app, ui, hit));
                 }
             }
-            if !contacts.is_empty() {
+            if !contacts.is_empty() || offer_self {
                 section(ui, &palette, "Contacts");
+                if offer_self {
+                    ui.push_id("self", |ui| self_row(app, ui));
+                }
                 for contact in &contacts {
                     ui.push_id(("contact", &contact.id), |ui| contact_row(app, ui, contact));
                 }
@@ -738,8 +747,36 @@ fn hit_row(app: &mut App, ui: &mut egui::Ui, hit: &Message) {
 
 /// A contact without a chat. Clicking starts one.
 pub(super) fn contact_row(app: &mut App, ui: &mut egui::Ui, contact: &Contact) {
-    let palette = app.palette;
     let name = app.display_name(&contact.id);
+    let detail = crate::model::phone_of(&contact.id).map(crate::util::phone);
+    if person_row(app, ui, &contact.id, &name, detail.as_deref()).clicked() {
+        app.actions.push(Action::StartChat {
+            id: contact.id.clone(),
+            name,
+        });
+    }
+}
+
+/// Offers the chat with ourselves, as "Name (You)" over "Message yourself".
+pub(super) fn self_row(app: &mut App, ui: &mut egui::Ui) {
+    let Some(me) = app.me.clone() else {
+        return;
+    };
+    let name = app.self_title();
+    let detail = crate::i18n::gettext(app.locale, "Message yourself");
+    if person_row(app, ui, &me, &name, Some(detail.as_ref())).clicked() {
+        app.actions.push(Action::MessageYourself);
+    }
+}
+
+fn person_row(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    id: &str,
+    name: &str,
+    detail: Option<&str>,
+) -> egui::Response {
+    let palette = app.palette;
     let (rect, response) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::ROW_HEIGHT),
         Sense::click(),
@@ -751,29 +788,22 @@ pub(super) fn contact_row(app: &mut App, ui: &mut egui::Ui, contact: &Contact) {
         }
         let avatar_rect =
             Rect::from_center_size(pos2(rect.left() + 38.0, rect.center().y), Vec2::splat(48.0));
-        let picture = app.avatar(&contact.id);
-        widgets::paint_avatar(
-            ui,
-            &palette,
-            avatar_rect,
-            &name,
-            &contact.id,
-            picture.as_deref(),
-        );
+        let picture = app.avatar(id);
+        widgets::paint_avatar(ui, &palette, avatar_rect, name, id, picture.as_deref());
         let left = rect.left() + 76.0;
         let name_line = widgets::line(
             ui,
-            &name,
+            name,
             theme::medium(14.5),
             palette.text,
             rect.right() - 14.0 - left,
             1,
         );
         name_line.paint(ui, pos2(left, rect.top() + 14.0), palette.text);
-        if let Some(phone) = crate::model::phone_of(&contact.id) {
+        if let Some(detail) = detail {
             let phone_line = widgets::line(
                 ui,
-                &crate::util::phone(phone),
+                detail,
                 theme::regular(13.0),
                 palette.dim,
                 rect.right() - 14.0 - left,
@@ -787,13 +817,7 @@ pub(super) fn contact_row(app: &mut App, ui: &mut egui::Ui, contact: &Contact) {
             egui::Stroke::new(1.0, palette.outline),
         );
     }
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.clicked() {
-        app.actions.push(Action::StartChat {
-            id: contact.id.clone(),
-            name,
-        });
-    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
@@ -812,7 +836,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             selected,
-            format!("{title}, {} unread messages", chat.unread),
+            unread_announcement(&title, chat),
         )
     });
     if ui.is_rect_visible(rect) {
@@ -843,7 +867,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         } else {
             String::new()
         };
-        let unread = chat.unread > 0;
+        let unread = chat.looks_unread();
         let stamp_color = if unread && !muted {
             palette.accent
         } else {
@@ -871,11 +895,12 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         let mut badge_right = right;
         let line_y = rect.top() + 38.0;
         if unread {
-            let width = widgets::badge(
+            let width = widgets::unread_indicator(
                 ui,
                 &palette,
                 pos2(badge_right - 10.0, line_y + 8.0),
                 chat.unread,
+                chat.marked_unread,
                 muted,
             );
             badge_right -= width + 6.0;
@@ -963,6 +988,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
         ui,
         &[
             "Mark as read",
+            "Mark as unread",
             "Pin to top",
             "Unarchive",
             "Mute for 8 hours",
@@ -972,6 +998,17 @@ fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
             "Copy number",
         ],
         true,
+    )
+    // Submenu rows also carry a chevron.
+    .max(
+        widgets::menu_width(
+            ui,
+            &[
+                "Notification sound",
+                &crate::i18n::gettext(app.locale, "Labels"),
+            ],
+            true,
+        ) + 24.0,
     )
     .max(190.0);
     let popup = egui::Popup::context_menu(&response)
@@ -1158,7 +1195,7 @@ fn compact_row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response 
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             selected,
-            format!("{title}, {} unread messages", chat.unread),
+            unread_announcement(&title, chat),
         )
     });
     if ui.is_rect_visible(rect) {
@@ -1193,15 +1230,16 @@ fn compact_row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response 
                 palette.accent,
             );
         }
-        if chat.unread > 0 {
+        if chat.looks_unread() {
             // Top right, clear of the disappearing-messages timer in the
             // bottom right corner. A muted chat's badge is dimmed, as in the
             // full row.
-            widgets::badge(
+            widgets::unread_indicator(
                 ui,
                 &palette,
                 compact_badge_center(avatar_rect),
                 chat.unread,
+                chat.marked_unread,
                 chat.muted(crate::util::now()),
             );
         }
@@ -1224,8 +1262,15 @@ fn compact_badge_center(avatar: Rect) -> egui::Pos2 {
 }
 
 fn context_menu(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palette) {
-    if chat.unread > 0 && widgets::menu_item(ui, palette, Some(Icon::CheckCheck), "Mark as read") {
+    if chat.looks_unread()
+        && widgets::menu_item(ui, palette, Some(Icon::CheckCheck), "Mark as read")
+    {
         app.actions.push(Action::MarkRead(chat.id.clone()));
+    }
+    if !chat.looks_unread()
+        && widgets::menu_item(ui, palette, Some(Icon::MessageCircle), "Mark as unread")
+    {
+        app.actions.push(Action::MarkUnread(chat.id.clone()));
     }
     if widgets::menu_item(
         ui,
@@ -1307,15 +1352,25 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palette
     }
 }
 
+/// What a screen reader reads out for a chat's unread state. A chat marked
+/// unread by hand has no count to read, so it must not announce zero.
+fn unread_announcement(title: &str, chat: &Chat) -> String {
+    if chat.marked_unread && chat.unread == 0 {
+        format!("{title}, unread")
+    } else {
+        format!("{title}, {} unread messages", chat.unread)
+    }
+}
+
 /// A chat's own notification sound, overriding Settings for this chat.
 fn sound_menu(app: &mut App, ui: &mut egui::Ui, palette: &Palette, chat: &Chat) {
     use crate::settings::NotificationSound;
-    ui.menu_button("Notification sound", |ui| {
+    widgets::submenu(ui, palette, Icon::Volume2, "Notification sound", |ui| {
         let current = chat.notification_sound.clone();
         for (sound, label) in [
             (None, "Default"),
-            (Some(NotificationSound::Chime), "Chime"),
-            (Some(NotificationSound::Ripple), "Ripple"),
+            (Some(NotificationSound::Receive), "Pidgin"),
+            (Some(NotificationSound::Alert), "Pidgin alert"),
             (Some(NotificationSound::System), "System sound"),
             (Some(NotificationSound::None), "No sound"),
         ] {
