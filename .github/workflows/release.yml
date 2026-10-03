@@ -73,7 +73,7 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev cmake perl
       # No compiler cache: published binaries never build from outputs
       # restored from an Actions cache.
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
@@ -103,15 +103,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $version =$env:GITHUB_REF_NAME.TrimStart("v")
           $arch = "${{ matrix.target }}".Split("-")[0]
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          $numericVersion = $version.Split("-")[0]
+          $numericVersion =$version.Split("-")[0]
           & $iscc "/DVersion=$version" "/DNumericVersion=$numericVersion" "/DArch=$arch" `
             "/DBinary=$PWD\target\${{ matrix.target }}\release\zapfast.exe" `
             "/DOutputDir=$PWD\dist" packaging\windows\zapfast.iss
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { exit$LASTEXITCODE }
 
       - name: Attest release packages
         uses: crmne/native-packages/.github/actions/attest@999768410cf53cdc68c8679c09cb14de1a6bca7b # v0.8.1
@@ -154,8 +154,8 @@ jobs:
       # No compiler cache, as in the build job above.
       - name: Build both architectures
         run: |
-          cargo build --locked --release --target aarch64-apple-darwin
-          cargo build --locked --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
 
       - name: Universal binary
         run: |
@@ -202,9 +202,6 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
 
-  # The Linux build packaged as a Flatpak bundle: the same binary, in the
-  # sandbox packaging/flatpak describes, so nothing compiles twice. Flathub
-  # builds from source on its own machines, from the manifest beside it.
   flatpak:
     name: Flatpak bundle
     permissions:
@@ -268,9 +265,6 @@ jobs:
           key-env: ZAPFAST_UPDATE_SIGNING_KEY
         env:
           ZAPFAST_UPDATE_SIGNING_KEY: ${{ secrets.ZAPFAST_UPDATE_SIGNING_KEY }}
-      # Publish the reviewed notes committed before the tag, never a
-      # generated summary. A stable tag without them stops here; a
-      # prerelease without them gets a short placeholder.
       - name: Release notes
         run: |
           notes="packaging/release-notes/${GITHUB_REF_NAME}.md"
